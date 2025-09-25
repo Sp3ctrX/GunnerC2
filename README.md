@@ -8,6 +8,13 @@ GunnerC2 blends a beautiful GUI, a powerful shell, and a modular core to make da
 
 ---
 
+## 🔐 Defaults (read me first)
+
+- **Default credentials:** `gunner:admin`  
+- **Teamserver default port:** **6060**
+
+---
+
 ## 🚀 Why GunnerC2?
 
 - **One tool, full stack:** Listeners, payloads, session control, file ops, BOFs, teamserver—**tightly integrated**.
