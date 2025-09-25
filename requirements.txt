@@ -1,6 +1,6 @@
 # --- Backend (API + auth) ---
 fastapi>=0.110
-uvicorn>=0.27
+uvicorn[standard]>=0.27     # includes websockets/httptools/etc
 pydantic>=2.6
 PyJWT>=2.8
 passlib[bcrypt]>=1.7
