@@ -5,6 +5,7 @@ pydantic>=2.6
 PyJWT>=2.8
 passlib[bcrypt]>=1.7
 cryptography>=42.0
+python-multipart>=0.0.9
 
 # --- CLI/Utilities ---
 colorama>=0.4.6
