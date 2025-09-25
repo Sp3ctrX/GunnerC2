@@ -59,14 +59,14 @@ class LoginDialog(QDialog):
 		title.setAlignment(Qt.AlignCenter); subtitle.setAlignment(Qt.AlignCenter)
 
 		# Fields
-		self.url_edit  = QLineEdit("http://127.0.0.1:8000")
+		self.url_edit  = QLineEdit("http://127.0.0.1:6060")
 		self.user_edit = QLineEdit(); self.user_edit.setPlaceholderText("Username")
 		self.pass_edit = QLineEdit(); self.pass_edit.setPlaceholderText("Password"); self.pass_edit.setEchoMode(QLineEdit.Password)
 
 		# Remove native frames (prevents the “extra” inner outline)
 		for le in (self.url_edit, self.user_edit, self.pass_edit):
 			le.setFrame(False)
-			self.url_edit.setPlaceholderText("Server URL (e.g., http://127.0.0.1:8000)")
+			self.url_edit.setPlaceholderText("Server URL (e.g., http://127.0.0.1:6060)")
 
 		# Eye button
 		self._eye = QToolButton(self.pass_edit); self._eye.setCursor(Qt.PointingHandCursor); self._eye.setCheckable(True)
