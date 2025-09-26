@@ -54,8 +54,9 @@ https://github.com/LeighlinRamsay/GunnerC2.git
 cd GunnerC2
 python3 -m pip install -r requirements.txt
 
-sudo apt-get update
-sudo apt-get install -y libxcb-xinerama0 libxkbcommon-x11-0
+sudo apt update
+sudo apt install -y libxcb-xinerama0 libxkbcommon-x11-0
+sudo apt install python3-pyqt5 python3-pyqt5.qtwebsockets
 ```
 
 **Troubleshooting module not found**
