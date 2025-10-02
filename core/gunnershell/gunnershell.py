@@ -42,6 +42,10 @@ from core.command_execution import tcp_command_execution as tcp_exec
 
 from core.gunnershell.gunnershell_utils import help_menu, pop_commands, _detect_gunnerplant
 
+# Transfer Framework Imports
+from core.transfers.manager import TransferManager, TransferOpts
+from core.transfers import xfer as xcmd
+
 # Colorama variables
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
@@ -204,10 +208,10 @@ class Gunnershell:
 		Resolution order:
 		  1) If `name_or_path` is a real file, read bytes and return (name, bytes).
 		  2) Else, consult BOF registry (core/gunnershell/bofs/base.py).
-		     If a provider class is registered under that name and has a
-		     class attribute `bofbase64`, decode and return (name, bytes).
-		     (Optional) If no `bofbase64`, but the class defines `load_bytes()`,
-		     call it and return (name, bytes).
+			 If a provider class is registered under that name and has a
+			 class attribute `bofbase64`, decode and return (name, bytes).
+			 (Optional) If no `bofbase64`, but the class defines `load_bytes()`,
+			 call it and return (name, bytes).
 
 		Returns:
 		  (bof_name: str, bof_bytes: bytes) or None if not found/failed.
@@ -427,38 +431,226 @@ class Gunnershell:
 					return
 				return
 
-			# upload: upload <local> <remote>
+			# === upload (new TransferManager flow; supports flags + legacy positional) ===
 			elif cmd == "upload":
-				parts = shlex.split(user)
-				if len(parts) != 3:
-					print(brightyellow + "Usage: upload <local_path> <remote_path>")
-					return
+				try:
+					args = shlex.split(user)
 
-				else:
-					local, remote = parts[1], parts[2]
-					if session_manager.sessions[self.sid].transport in ("http", "https"):
-						shell.upload_file_http(self.sid, local, remote)
+					parser = QuietParser(prog="upload", add_help=False)
+					parser.add_argument("-l", required=True, help="Local file or folder path")
+					parser.add_argument("-r", required=True, help="Remote destination file or directory")
+					parser.add_argument("-t", "--timeout", dest="timeout", type=float, required=False, default=None, help="Timeout per chunk (seconds)")
+					parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 
-					else:
-						shell.upload_file_tcp(self.sid, local, remote)
+					try:
+						parsed_args = parser.parse_args(args[1:])
+
+					except SystemExit:
+						print(brightyellow + "Usage: upload -l <local> -r <remote> [--chunk N] [--timeout S]")
+						return
+
+					sid = self.sid
+					session = session_manager.sessions.get(sid)
+
+					if not session:
+						print(brightred + f"Invalid session: {sid}")
+						return
+
+					trans = session.transport.lower()
+					if trans in ("http", "https") and not parsed_args.timeout:
+						print(brightyellow + "You must specify a timeout for HTTP/HTTPS transfers (use ~2× interval, 3× if jittery).")
+						return
+					timeout = parsed_args.timeout
+
+					remote_os = (session.metadata or {}).get("os", "").lower()
+					remote_path = parsed_args.r
+					local_path  = parsed_args.l
+
+					if remote_os == "windows" and ("\\" not in remote_path):
+						print(brightyellow + "[*] Windows agents require double backslashes in remote paths (e.g., C:\\\\path\\\\to)")
+						return
+
+					if not os.path.exists(local_path):
+						print(brightred + f"[!] Local path does not exist: {local_path}")
+						return
+
+					is_folder = os.path.isdir(local_path)
+					tm = TransferManager()
+					try:
+						opts = TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=op_id)
+					except NameError:
+						# Fallback if to_console/to_op not in this scope
+						opts = TransferOpts(chunk_size=parsed_args.chunk)
+
+					tid = tm.start_upload(
+						sid=sid,
+						local_path=local_path,
+						remote_path=remote_path,
+						folder=is_folder,
+						opts=opts,
+						timeout=timeout
+					)
+					print(brightyellow + f"[*] TID={tid} (use: xfer status -t {tid} | xfer resume -t {tid})")
+				except Exception as e:
+					try:
+						logger.exception(f"Upload start failed: {e}")
+					except Exception:
+						pass
+					print(brightred + f"[!] Upload failed to start: {e}")
 				return
 
-			# download: download <remote> <local>
+			# === download (new TransferManager flow; supports flags + legacy positional) ===
 			elif cmd == "download":
-				parts = shlex.split(user)
+				try:
+					args = shlex.split(user)
 
-				if len(parts) != 3:
-					print(brightyellow + "Usage: download <remote_path> <local_path>")
-					return
+				   
+					parser = QuietParser(prog="download", add_help=False)
+					parser.add_argument("-f", required=True, help="Remote file or folder path")
+					parser.add_argument("-o", required=True, help="Local output file or directory")
+					parser.add_argument("-t", "--timeout", dest="timeout", type=float, required=False, default=None, help="Timeout per chunk (seconds)")
+					parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 
-				else:
-					remote, local = parts[1], parts[2]
-					if session_manager.sessions[self.sid].transport in ("http", "https"):
-						shell.download_file_http(self.sid, remote, local)
+					try:
+						parsed_args = parser.parse_args(args[1:])
+					except SystemExit:
+						print(brightyellow + "Usage: download -f <remote> -o <local> [--chunk N] [--timeout S]")
+						return
 
-					else:
-						shell.download_file_tcp(self.sid, remote, local)
+					sid = self.sid
+					session = session_manager.sessions.get(sid)
+					if not session:
+						print(brightred + f"Invalid session: {sid}")
+						return
+
+					trans = session.transport.lower()
+					if trans in ("http", "https") and not parsed_args.timeout:
+						print(brightyellow + "You must specify a timeout for HTTP/HTTPS transfers (use ~2× interval, 3× if jittery).")
+						return
+					timeout = parsed_args.timeout
+
+					remote_os = (session.metadata or {}).get("os", "").lower()
+					remote_path = parsed_args.f
+					local_out   = parsed_args.o
+
+					if remote_os == "windows" and ("\\" not in remote_path):
+						print(brightred + "Use double backslashes for Windows remote paths.")
+						return
+
+					tm = TransferManager()
+					try:
+						opts = TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=op_id)
+					except NameError:
+						opts = TransferOpts(chunk_size=parsed_args.chunk)
+
+					# folder=None => let remote probe determine file vs folder
+					tid = tm.start_download(
+						sid=sid,
+						remote_path=remote_path,
+						local_path=local_out,
+						folder=None,
+						opts=opts,
+						timeout=timeout
+					)
+					print(brightyellow + f"[*] TID={tid} (use: xfer status -t {tid} | xfer resume -t {tid})")
+				except Exception as e:
+					try:
+						logger.exception(f"Download start failed: {e}")
+					except Exception:
+						pass
+					print(brightred + f"[!] Error starting download: {e}")
 				return
+
+			elif cmd.startswith("xfer"):
+				try:
+					def _usage():
+						"""print(brightyellow + (
+							"Usage:\n"
+							"  xfer list [-i <session_id_or_alias>]\n"
+							"  xfer status -t <tid|prefix> [-i <session_id_or_alias>]\n"
+							"  xfer resume -t <tid|prefix> [-i <session_id_or_alias>]\n"
+							"  xfer cancel -t <tid|prefix> [-i <session_id_or_alias>]\n"
+						))"""
+						utils.print_help("xfer")
+
+					args = shlex.split(user)
+					if len(args) == 1 or args[1] in ("-h", "--help"):
+						_usage()
+						return
+
+					sub = args[1].lower()
+					rest = args[2:]
+
+					if sub == "clear":		
+						parser = QuietParser(prog="xfer clear", add_help=False)
+						g = parser.add_mutually_exclusive_group(required=True)
+						g.add_argument("-a", "--all", action="store_true")
+						g.add_argument("-t", metavar="TIDS", help="TID or comma-separated TIDs/prefixes")
+						g.add_argument("-i", metavar="SIDPAT", help="Session ID wildcard (e.g., 2g3sj-*)")
+						g.add_argument("-f", metavar="FILE", help="File containing TIDs (one per line)")
+						try:
+							ns = parser.parse_args(args[2:])
+						except SystemExit:
+							utils.print_help("xfer clear")
+							return
+						xcmd.handle_clear(ns, to_console=to_console, to_op=op_id)
+						return
+
+					elif sub == "list":
+						p = QuietParser(prog="xfer list", add_help=False)
+						p.add_argument("-i", required=False)
+						try:
+							ns = p.parse_args(rest)
+						except SystemExit:
+							_usage()
+							return
+						xcmd.cmd_list(getattr(ns, "i", None), to_console=to_console, to_op=op_id)
+						return
+
+					def _parse_tid(cmdname: str):
+						if cmdname == "resume":
+							p = QuietParser(prog=f"xfer {cmdname}", add_help=False)
+							p.add_argument("-t", required=True)
+							p.add_argument("-i", required=False)
+							p.add_argument("--timeout", required=False, default=None, dest="timeout")
+
+						else:
+							p = QuietParser(prog=f"xfer {cmdname}", add_help=False)
+							p.add_argument("-t", required=True)
+							p.add_argument("-i", required=False)
+
+						try:
+							return p.parse_args(rest)
+
+						except SystemExit:
+							_usage()
+							return None
+
+					if sub == "status":
+						ns = _parse_tid("status")
+						if ns is None:
+							return
+						xcmd.cmd_status(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=op_id)
+						return
+
+					if sub == "resume":
+						ns = _parse_tid("resume")
+						if ns is None:
+							return
+						xcmd.cmd_resume(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=op_id, timeout=ns.timeout)
+						return
+
+					if sub == "cancel":
+						ns = _parse_tid("cancel")
+						if ns is None:
+							return
+						xcmd.cmd_cancel(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=op_id)
+						return
+
+					_usage()
+
+				except Exception as e:
+					print(brightred + f"[!] xfer failed: {e}")
 
 			# shell: drop into full interactive shell
 			elif cmd == "shell":
