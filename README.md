@@ -1,5 +1,8 @@
 # GunnerC2
 
+![1758820780591](https://github.com/user-attachments/assets/0e94810a-3764-4b3e-bf0a-216dc3c8083b)
+
+
 A modern, operator-friendly **Command-and-Control framework** for authorized red-team operations and research.  
 GunnerC2 blends a beautiful GUI, a powerful shell, and a modular core to make day-to-day ops fast, visual, and collaborative.
 
